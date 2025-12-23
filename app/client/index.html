@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jchan</title>
+    <script src="https://unpkg.com/nostr-tools@1.17.0/lib/nostr.bundle.js"></script>
+    <style>
+        body { background: #eef2ff; color: #800000; font-family: arial,sans-serif; margin: 0; }
+        #bannerContainer { text-align: center; padding: 10px; background: #fff; border-bottom: 1px solid #b7c5d9; }
+        #bannerImg { max-width: 100%; height: 100px; object-fit: contain; }
+        .nav { background: #d6daf0; border-bottom: 1px solid #b7c5d9; padding: 5px; text-align: center; font-size: 13px; }
+        .nav a { color: #34345c; text-decoration: none; padding: 0 7px; font-weight: bold; cursor: pointer; }
+        header { text-align: center; padding: 10px; }
+        h1 { margin: 0; font-size: 28px; color: #af0a0f; }
+
+        /* FORMULÁRIO */
+        .post-form { background: #d6daf0; border: 1px solid #b7c5d9; padding: 10px; width: 95%; max-width: 450px; margin: 10px auto; font-size: 12px; }
+        .label { background: #98e; color: #111; font-weight: bold; padding: 2px 5px; width: 80px; text-align: center; }
+        textarea { width: 100%; border: 1px solid #aaa; resize: vertical; }
+        
+        /* THREADS E POSTS */
+        .thread-container { border-bottom: 2px solid #b7c5d9; padding: 20px; max-width: 900px; margin: auto; }
+        .op-post { margin-bottom: 10px; }
+        .reply-post { background: #d6daf0; border: 1px solid #b7c5d9; padding: 8px; margin: 5px 0 5px 40px; display: table; min-width: 300px; }
+        .post-header { color: #117743; font-weight: bold; font-size: 12px; margin-bottom: 5px; }
+        .post-img { float: left; margin: 5px 10px 5px 0; max-width: 200px; max-height: 200px; border: 1px solid #ccc; }
+        .post-content { color: #000; font-size: 14px; white-space: pre-wrap; }
+        .reply-link { color: #34345c; font-size: 11px; text-decoration: underline; cursor: pointer; margin-left: 10px; }
+        
+        #adminArea { display: none; background: #333; color: #fff; padding: 10px; text-align: center; }
+        .back-btn { display: block; text-align: center; margin: 10px; font-weight: bold; cursor: pointer; color: blue; }
+    </style>
+</head>
+<body>
+
+<div id="adminArea">MODO ADMIN | Link Banner: <input type="text" id="newBanner"> <button onclick="addBanner()">Salvar</button></div>
+
+<div id="bannerContainer"><img id="bannerImg" src=""></div>
+
+<div class="nav">
+    [ <a onclick="ir('home')">home</a> / <a onclick="ir('b')">b</a> / <a onclick="ir('soybr')">soybr</a> / <a onclick="showAdmin()">admin</a> ]
+</div>
+
+<header><h1>Jchan</h1><div id="btitle" style="font-weight:bold">/home/</div></header>
+
+<div id="regras" style="max-width:600px; margin:auto; background:#fff; border:1px solid #af0a0f; padding:15px; display:none;">
+    <h3 style="text-align:center;color:#af0a0f">REGRAS DO JCHAN</h3>
+    <p id="regrasTexto"></p>
+</div>
+
+<div id="view-thread-btn" class="back-btn" style="display:none;" onclick="ir(board)">[ Voltar ao Board ]</div>
+
+<div class="post-form" id="postForm" style="display:none;">
+    <table style="width:100%">
+        <tr><td class="label">Arquivo</td><td><input type="file" id="fileInput" accept="image/*"></td></tr>
+        <tr><td class="label">Comentário</td><td><textarea id="msgInput" rows="4"></textarea></td></tr>
+        <tr><td></td><td><button id="btnPostar" onclick="enviarPost()">Postar</button></td></tr>
+    </table>
+</div>
+
+<div id="feed"></div>
+
+<script>
+    const RELAYS = ["wss://relay.damus.io", "wss://nos.lol", "wss://relay.nostr.band"];
+    let board = "home";
+    let threadFocada = null; // Se estiver em uma thread específica
+    const pool = new window.NostrTools.SimplePool();
+
+    // Configurações iniciais
+    const regras = "1. Sem nazismo | 2. Sem incelismo | 3. Sem viadagem | 4. SEM CP (BAN) | 5. Sem fetiches exagerados | 6. Críticas permitidas.";
+    document.getElementById('regrasTexto').innerText = regras;
+
+    function rotarBanner() {
+        const banners = JSON.parse(localStorage.getItem('jchan_banners')) || ["https://i.imgur.com/8N8H1nU.png"];
+        document.getElementById('bannerImg').src = banners[Math.floor(Math.random() * banners.length)];
+    }
+
+    function ir(id, threadId = null) {
+        board = id;
+        threadFocada = threadId;
+        document.getElementById('btitle').innerText = threadId ? `/thread/${threadId.substring(0,8)}/` : `/${id}/`;
+        document.getElementById('regras').style.display = (id === 'home' && !threadId) ? 'block' : 'none';
+        document.getElementById('postForm').style.display = (id === 'home' || threadId) ? (threadId ? 'block' : 'none') : 'block';
+        document.getElementById('view-thread-btn').style.display = threadId ? 'block' : 'none';
+        
+        if (threadId) {
+            document.getElementById('btnPostar').innerText = "Responder";
+        } else {
+            document.getElementById('btnPostar').innerText = "Postar";
+        }
+        
+        if(id !== 'home' || threadId) carregar();
+        else document.getElementById('feed').innerHTML = "";
+    }
+
+    async function subirImagem(file) {
+        const formData = new FormData();
+        formData.append("fileToUpload", file);
+        formData.append("reqtype", "fileupload");
+        const res = await fetch("https://catbox.moe/user/api.php", { method: "POST", body: formData });
+        return await res.text();
+    }
+
+    async function enviarPost() {
+        const txt = document.getElementById('msgInput').value;
+        const file = document.getElementById('fileInput').files[0];
+        
+        if(!txt) return alert("Texto obrigatório!");
+        if(!threadFocada && !file) return alert("ERRO: Um novo post precisa de uma imagem!");
+
+        document.getElementById('btnPostar').disabled = true;
+        document.getElementById('btnPostar').innerText = "Subindo...";
+
+        let imgUrl = "";
+        if(file) imgUrl = await subirImagem(file);
+
+        const nt = window.NostrTools;
+        const sk = nt.generatePrivateKey();
+        const event = {
+            kind: 1, pubkey: nt.getPublicKey(sk), created_at: Math.floor(Date.now()/1000),
+            tags: [["t", "jchan_" + board]], content: txt
+        };
+
+        if(imgUrl) event.tags.push(["image", imgUrl]);
+        if(threadFocada) event.tags.push(["e", threadFocada, "", "root"]);
+
+        event.id = nt.getEventHash(event);
+        event.sig = nt.getSignature(event, sk);
+        await pool.publish(RELAYS, event);
+        
+        location.reload(); 
+    }
+
+    async function carregar() {
+        const feed = document.getElementById('feed');
+        feed.innerHTML = "Lendo rede P2P...";
+        
+        let filter = { kinds: [1], "#t": ["jchan_" + board] };
+        let events = await pool.list(RELAYS, [filter]);
+        events.sort((a, b) => b.created_at - a.created_at);
+
+        feed.innerHTML = "";
+
+        if (threadFocada) {
+            // Mostrar apenas a thread selecionada e suas respostas
+            let root = events.find(e => e.id === threadFocada);
+            let replies = events.filter(e => e.tags.some(t => t[0] === 'e' && t[1] === threadFocada));
+            renderThread(root, replies.reverse(), true);
+        } else {
+            // Mostrar todas as threads (posts que não têm tag 'e' de resposta)
+            let roots = events.filter(e => !e.tags.some(t => t[0] === 'e'));
+            roots.forEach(root => {
+                let replies = events.filter(e => e.tags.some(t => t[0] === 'e' && t[1] === root.id)).slice(0, 3);
+                renderThread(root, replies.reverse(), false);
+            });
+        }
+    }
+
+    function renderThread(op, replies, isFull) {
+        const feed = document.getElementById('feed');
+        const container = document.createElement('div');
+        container.className = 'thread-container';
+
+        const img = op.tags.find(t => t[0] === 'image');
+        const imgHtml = img ? `<a href="${img[1]}" target="_blank"><img class="post-img" src="${img[1]}"></a>` : '';
+        
+        container.innerHTML = `
+            <div class="op-post">
+                <div class="post-header">Anônimo No.${op.id.substring(0,8)} ${new Date(op.created_at*1000).toLocaleString()} 
+                ${!isFull ? `<span class="reply-link" onclick="ir('${board}', '${op.id}')">[Reply]</span>` : ''}</div>
+                ${imgHtml}
+                <div class="post-content">${op.content}</div>
+                <div style="clear:both"></div>
+            </div>
+        `;
+
+        replies.forEach(r => {
+            const rImg = r.tags.find(t => t[0] === 'image');
+            const rImgHtml = rImg ? `<a href="${rImg[1]}" target="_blank"><img class="post-img" src="${rImg[1]}" style="max-width:100px; max-height:100px;"></a>` : '';
+            const repDiv = document.createElement('div');
+            repDiv.className = 'reply-post';
+            repDiv.innerHTML = `
+                <div class="post-header">Anônimo No.${r.id.substring(0,8)}</div>
+                ${rImgHtml}
+                <div class="post-content">${r.content}</div>
+                <div style="clear:both"></div>
+            `;
+            container.appendChild(repDiv);
+        });
+
+        feed.appendChild(container);
+    }
+
+    function showAdmin() { if(prompt("Senha:") === "123456") document.getElementById('adminArea').style.display='block'; }
+    function addBanner() { 
+        let b = JSON.parse(localStorage.getItem('jchan_banners')) || [];
+        b.push(document.getElementById('newBanner').value);
+        localStorage.setItem('jchan_banners', JSON.stringify(b));
+        rotarBanner();
+    }
+
+    rotarBanner();
+    ir('home');
+</script>
+</body>
+</html>
