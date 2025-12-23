@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jchan - P2P</title>
+    <script src="https://unpkg.com/nostr-tools@1.17.0/lib/nostr.bundle.js"></script>
+    <style>
+        body { background: #eef2ff; color: #800000; font-family: sans-serif; margin: 0; font-size: 13px; }
+        #banner { text-align: center; background: #fff; border-bottom: 1px solid #b7c5d9; padding: 5px; }
+        #banner img { max-width: 100%; height: 120px; object-fit: contain; }
+        .nav { background: #d6daf0; border-bottom: 1px solid #b7c5d9; padding: 5px; text-align: center; }
+        .nav a { color: #34345c; text-decoration: none; padding: 0 10px; font-weight: bold; cursor: pointer; }
+        header { text-align: center; padding: 10px; }
+        h1 { margin: 0; font-size: 32px; color: #af0a0f; }
+        .post-form { background: #d6daf0; border: 1px solid #b7c5d9; padding: 10px; max-width: 460px; margin: 10px auto; }
+        .thread { border-bottom: 1px solid #b7c5d9; padding: 15px; max-width: 800px; margin: auto; }
+        .post { background: #d6daf0; border: 1px solid #b7c5d9; padding: 8px; margin: 4px 0; display: table; width: 100%; box-sizing: border-box; }
+        .p-header { color: #117743; font-weight: bold; font-size: 11px; margin-bottom: 5px; }
+        .p-id { color: #cc1105; cursor: pointer; }
+        .p-img { float: left; margin: 5px 10px 5px 0; max-width: 150px; max-height: 150px; border: 1px solid #aaa; }
+        .p-content { color: #000; font-size: 14px; white-space: pre-wrap; word-wrap: break-word; }
+        #regras { max-width: 500px; margin: 20px auto; background: #fff; border: 2px solid #af0a0f; padding: 15px; }
+    </style>
+</head>
+<body>
+
+<div id="banner"><img src="https://marianaslibrary.org/images/banner.png"></div>
+<div class="nav">
+    [ <a onclick="ir('home')">home</a> / <a onclick="ir('b')">b</a> / <a onclick="ir('soybr')">soybr</a> / <a onclick="login()">admin</a> ]
+</div>
+
+<header><h1>Jchan</h1><b id="btitle">/home/</b></header>
+
+<div id="regras">
+    <h3 style="text-align:center; color:#af0a0f; margin-top:0;">REGRAS DO JCHAN</h3>
+    <div id="regrasLista"></div>
+</div>
+
+<div id="postForm" class="post-form" style="display:none;">
+    <b>Arquivo:</b> <input type="file" id="f" accept="image/*"><br>
+    <textarea id="m" rows="5" style="width:100%; margin:5px 0;" placeholder="Sua mensagem..."></textarea><br>
+    <button id="btn" onclick="postar()" style="width:100%; font-weight:bold; height: 35px;">POSTAR</button>
+</div>
+
+<div id="feed"></div>
+
+<script>
+    const RELAYS = ["wss://nos.lol", "wss://relay.damus.io"];
+    let board = "home";
+    let adm = false;
+    const pool = new window.NostrTools.SimplePool();
+
+    const REGRAS = [
+        "1. SEM NAZISMO OU VIADAGEM", "2. SEM INCEL DE MERDA", "3. SEM ELIGEBETISSE", 
+        "4. SEM CP (BAN ETERNO)", "5. SEM FETICHES EXAGERADOS", "6. CRÍTICAS AO JCHAN LIBERADAS"
+    ];
+
+    function ir(id) {
+        board = id;
+        document.getElementById('btitle').innerText = "/" + id + "/";
+        const h = id === 'home';
+        document.getElementById('regras').style.display = h ? 'block' : 'none';
+        document.getElementById('postForm').style.display = h ? 'none' : 'block';
+        if(h) {
+            document.getElementById('regrasLista').innerHTML = REGRAS.map(r => `<p><b>${r}</b></p>`).join('');
+            document.getElementById('feed').innerHTML = "";
+        } else carregar();
+    }
+
+    async function postar() {
+        const txt = document.getElementById('m').value;
+        const file = document.getElementById('f').files[0];
+        const btn = document.getElementById('btn');
+
+        if(!txt && !file) return alert("Escreva algo!");
+        
+        btn.innerText = "Hospedando imagem..."; btn.disabled = true;
+
+        let url = "";
+        if(file) {
+            try {
+                const fd = new FormData();
+                fd.append("file", file);
+                // Usando tmpfiles.org que é excelente para evitar travamentos de CORS no Vercel
+                const r = await fetch("https://tmpfiles.org/api/v1/upload", {
+                    method: "POST",
+                    body: fd
+                });
+                const d = await r.json();
+                // O segredo está em transformar o link da página no link direto da imagem
+                url = d.data.url.replace("tmpfiles.org/", "tmpfiles.org/dl/");
+            } catch(e) {
+                console.error(e);
+                alert("Erro no servidor de imagem. Tente postar apenas texto.");
+                btn.innerText = "POSTAR"; btn.disabled = false; return;
+            }
+        }
+
+        const nt = window.NostrTools;
+        const sk = nt.generatePrivateKey();
+        const ev = {
+            kind:1, pubkey:nt.getPublicKey(sk), created_at:Math.floor(Date.now()/1000),
+            tags:[["t", "jchan_"+board]], content:txt
+        };
+        if(url) ev.tags.push(["image", url]);
+        ev.id = nt.getEventHash(ev); ev.sig = nt.getSignature(ev, sk);
+        await pool.publish(RELAYS, ev);
+        
+        document.getElementById('m').value = "";
+        document.getElementById('f').value = "";
+        btn.innerText = "POSTAR"; btn.disabled = false;
+        carregar();
+    }
+
+    async function carregar() {
+        const f = document.getElementById('feed');
+        f.innerHTML = "<center>Carregando posts...</center>";
+        let evs = await pool.list(RELAYS, [{kinds:[1], "#t":["jchan_"+board], limit:40}]);
+        evs.sort((a,b) => b.created_at - a.created_at);
+        f.innerHTML = "";
+        evs.forEach(p => {
+            if(localStorage.getItem("ban_"+p.id)) return;
+            const img = p.tags.find(t => t[0]==='image');
+            const d = document.createElement('div');
+            d.className = 'thread';
+            d.innerHTML = `
+                <div class="post">
+                    <div class="p-header">
+                        ${adm ? `<button onclick="ban('${p.id}')">BAN</button>` : ''}
+                        Anônimo <span class="p-id" onclick="quote('${p.id.substring(0,5)}')">No.${p.id.substring(0,5)}</span>
+                        [${new Date(p.created_at*1000).toLocaleTimeString()}]
+                    </div>
+                    ${img ? `<a href="${img[1]}" target="_blank"><img class="p-img" src="${img[1]}"></a>` : ''}
+                    <div class="p-content">${p.content}</div>
+                    <div style="clear:both"></div>
+                </div>`;
+            f.appendChild(d);
+        });
+    }
+
+    function quote(id) { document.getElementById('m').value += ">>"+id+" "; document.getElementById('m').focus(); }
+    function login() { if(prompt("Senha:")==="123456") {adm=true; carregar();} }
+    function ban(id) { localStorage.setItem("ban_"+id, "1"); carregar(); }
+
+    ir('home');
+</script>
+</body>
+</html>
