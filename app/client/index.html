@@ -1,0 +1,116 @@
+<script src="https://unpkg.com/nostr-tools@1.17.0/lib/nostr.bundle.js"></script>
+<script>
+    // Usamos o prefixo window.NostrTools para garantir que o navegador ache a biblioteca
+    const RELAYS = ["wss://relay.damus.io", "wss://nos.lol", "wss://relay.nostr.band"];
+    const SENHA_ADMIN = "123456"; 
+    let boardAtivo = "home";
+    let isAdmin = false;
+    
+    // Inicializa o Pool de conexões corretamente
+    const pool = new window.NostrTools.SimplePool();
+    
+    // Gera chaves para postagem anônima
+    const privKey = window.NostrTools.generatePrivateKey();
+    const pubKey = window.NostrTools.getPublicKey(privKey);
+
+    function loginAdmin() {
+        if(prompt("Senha:") === SENHA_ADMIN) {
+            isAdmin = true;
+            document.getElementById('adminPanel').style.display = 'block';
+            carregar();
+        }
+    }
+
+    function sairAdmin() {
+        isAdmin = false;
+        document.getElementById('adminPanel').style.display = 'none';
+        carregar();
+    }
+
+    function mudarBoard(id) {
+        boardAtivo = id;
+        document.getElementById('btitle').innerText = "/" + id + "/";
+        
+        if(id === 'home') {
+            document.getElementById('regrasArea').style.display = 'block';
+            document.getElementById('postForm').style.display = 'none';
+            document.getElementById('feed').innerHTML = "";
+        } else {
+            document.getElementById('regrasArea').style.display = 'none';
+            document.getElementById('postForm').style.display = 'block';
+            carregar();
+        }
+    }
+
+    async function carregar() {
+        if(boardAtivo === 'home') return;
+        const feed = document.getElementById('feed');
+        feed.innerHTML = "<span style='color:gray'>Sintonizando P2P...</span>";
+        
+        try {
+            // Busca os eventos tipo 1 (texto) com a hashtag do board
+            let posts = await pool.list(RELAYS, [{ 
+                kinds: [1], 
+                "#t": ["jchan_" + boardAtivo], 
+                limit: 50 
+            }]);
+
+            posts.sort((a, b) => b.created_at - a.created_at);
+            feed.innerHTML = "";
+
+            if (posts.length === 0) {
+                feed.innerHTML = "<div style='color:gray; padding:20px;'>Nenhum post no momento.</div>";
+            }
+
+            posts.forEach(p => {
+                if(localStorage.getItem("ban_" + p.id)) return;
+                const div = document.createElement('div');
+                div.className = 'post';
+                div.innerHTML = `
+                    <div class="post-header">
+                        ${isAdmin ? `<span class="admin-controls"><button onclick="banir('${p.id}')" style="background:red; color:white; border:none; font-size:10px; cursor:pointer; padding:2px 5px;">BAN</button></span>` : ''}
+                        Anônimo ${new Date(p.created_at*1000).toLocaleString()} No.${p.id.substring(0,8)}
+                    </div>
+                    <div class="post-content">${p.content.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>
+                `;
+                feed.appendChild(div);
+            });
+        } catch (e) { 
+            console.error(e);
+            feed.innerHTML = "<b style='color:red'>Erro de Sincronização. Tente atualizar a página.</b>"; 
+        }
+    }
+
+    async function banir(id) {
+        if(confirm("Deseja ocultar este post permanentemente para você e outros admins locais?")) {
+            localStorage.setItem("ban_" + id, "true");
+            carregar();
+        }
+    }
+
+    async function postar() {
+        const txt = document.getElementById('msgInput').value;
+        if (!txt) return;
+
+        const event = {
+            kind: 1,
+            pubkey: pubKey,
+            created_at: Math.floor(Date.now() / 1000),
+            tags: [["t", "jchan_" + boardAtivo]],
+            content: txt
+        };
+
+        // Assina o evento para os Relays aceitarem
+        event.id = window.NostrTools.getEventHash(event);
+        event.sig = window.NostrTools.getSignature(event, privKey);
+
+        let pubs = pool.publish(RELAYS, event);
+        
+        document.getElementById('msgInput').value = "";
+        
+        // Espera um pouco o Relay processar e atualiza
+        setTimeout(carregar, 1000);
+    }
+
+    mudarBoard('home');
+</script>
